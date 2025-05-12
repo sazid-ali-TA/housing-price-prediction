@@ -1,0 +1,7 @@
+driver: mlflow
+artifact_store:
+  uri: mlruns/
+backend_store:
+  uri: http://localhost:8082
+model_registry:
+  uri: mlruns/

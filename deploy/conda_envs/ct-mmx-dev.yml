@@ -1,0 +1,9 @@
+channels:
+  - conda-forge
+dependencies:
+  - arviz==0.12.1
+  - pip:
+    - protobuf==3.19.4
+    - bambi==0.9.0
+    - jupyter_dash==0.4.2
+    - nbformat==5.8.0
