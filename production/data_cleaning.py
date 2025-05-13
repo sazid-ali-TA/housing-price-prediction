@@ -1,10 +1,13 @@
-"""Processors for the data cleaning step of the worklow.
+"""Processors for the data cleaning step of the workflow.
 
-The processors in this step, apply the various cleaning steps identified
+The processors in this step apply the various cleaning steps identified
 during EDA to create the training datasets.
 """
 import numpy as np
 import pandas as pd
+import os
+import tarfile
+import urllib.request
 from sklearn.model_selection import StratifiedShuffleSplit
 
 from ta_lib.core.api import (
@@ -14,153 +17,112 @@ from ta_lib.core.api import (
     save_dataset,
     string_cleaning
 )
-from scripts import binned_selling_price
 
 
-@register_processor("data-cleaning", "product")
-def clean_product_table(context, params):
-    """Clean the ``PRODUCT`` data table.
+def binned_income(df):
+    """Bin the median_income column for stratified sampling."""
+    return pd.cut(
+        df["median_income"],
+        bins=[0.0, 1.5, 3.0, 4.5, 6.0, np.inf],
+        labels=[1, 2, 3, 4, 5],
+    )
 
-    The table contains information on the inventory being sold. This
-    includes information on inventory id, properties of the item and
-    so on.
+
+@register_processor("data-cleaning", "housing")
+def clean_housing_table(context, params):
+    """Clean the ``housing`` data table.
+
+    The table contains information on housing data in California.
+    This function downloads the data if necessary and cleans it.
     """
+    # Define paths
+    DOWNLOAD_ROOT = "https://raw.githubusercontent.com/ageron/handson-ml/master/"
+    HOUSING_PATH = os.path.join("./data/", "raw", "housing")
+    HOUSING_URL = DOWNLOAD_ROOT + "datasets/housing/housing.tgz"
 
-    input_dataset = "raw/product"
-    output_dataset = "cleaned/product"
+    # Create directories if they don't exist
+    os.makedirs(HOUSING_PATH, exist_ok=True)
 
-    # load dataset
-    product_df = load_dataset(context, input_dataset)
+    # Download and extract data
+    tgz_path = os.path.join(HOUSING_PATH, "housing.tgz")
+    if not os.path.exists(os.path.join(HOUSING_PATH, "housing.csv")):
+        urllib.request.urlretrieve(HOUSING_URL, tgz_path)
+        with tarfile.open(tgz_path) as housing_tgz:
+            housing_tgz.extractall(path=HOUSING_PATH)
 
-    product_df_clean = (
-        product_df
-        # set dtypes : nothing to do here
-        .passthrough()
-        .transform_columns(
-            product_df.columns.to_list(), string_cleaning, elementwise=False
+    # Now load and clean the dataset
+    input_dataset = "raw/housing"
+    output_dataset = "cleaned/housing"
+
+    # load dataset (if it exists in the catalog)
+    try:
+        housing_df = load_dataset(context, input_dataset)
+    except Exception:
+        # If the dataset isn't found in the catalog, read directly from file
+        csv_path = os.path.join(HOUSING_PATH, "housing.csv")
+        housing_df = pd.read_csv(csv_path)
+        # Save it to the raw location
+        save_dataset(context, housing_df, input_dataset)
+        # Load it again to ensure consistent processing
+        housing_df = load_dataset(context, input_dataset)
+
+    # Handling missing values
+    housing_df_clean = (
+        housing_df
+        # Fill missing values with median for numeric columns
+        .fillna(housing_df.select_dtypes(include=[np.number]).median())
+        # Add engineered features
+        .assign(
+            rooms_per_household=housing_df["total_rooms"] / housing_df["households"],
+            bedrooms_per_room=housing_df["total_bedrooms"] / housing_df["total_rooms"],
+            population_per_household=housing_df["population"] / housing_df["households"]
         )
-        .replace({"": np.NaN})
-        # drop unnecessary cols : nothing to do here
-        .coalesce(["color", "Ext_Color"], "color", delete_columns=True)
-        # drop unnecessary cols : nothing to do here
-        .coalesce(["MemorySize", "Ext_memorySize"], "memory_size", delete_columns=True)
-        # ensure that the key column does not have duplicate records
-        .remove_duplicate_rows(col_names=["SKU"], keep_first=True)
-        # clean column names (comment out this line while cleaning data above)
+        # Clean column names (comment out this line while cleaning data above)
         .clean_names(case_type="snake")
     )
 
     # save the dataset
-    save_dataset(context, product_df_clean, output_dataset)
+    save_dataset(context, housing_df_clean, output_dataset)
 
-    return product_df_clean
-
-
-@register_processor("data-cleaning", "orders")
-def clean_order_table(context, params):
-    """Clean the ``ORDER`` data table.
-
-    The table containts the sales data and has information on the invoice,
-    the item purchased, the price etc.
-    """
-
-    input_dataset = "raw/orders"
-    output_dataset = "cleaned/orders"
-
-    # load dataset
-    orders_df = load_dataset(context, input_dataset)
-
-
-    # list of columns that we want string cleaning op to be performed on.
-    str_cols = list(
-        set(orders_df.select_dtypes("object").columns.to_list())
-        - set(["Quantity", "InvoiceNo", "Orderno", "LedgerDate"])
-    )
-    orders_df_clean = (
-        orders_df
-        # set dtypes
-        .change_type(["Quantity", "InvoiceNo", "Orderno"], np.int64)
-        # set dtypes
-        .to_datetime("LedgerDate", format="%d/%m/%Y")
-        # clean string columns (NOTE: only handling datetime columns)
-        .transform_columns(str_cols, string_cleaning, elementwise=False)
-        # clean column names
-        .clean_names(case_type="snake").rename_columns({"orderno": "order_no"})
-    )
-
-    # save dataset
-    save_dataset(context, orders_df_clean, output_dataset)
-    return orders_df_clean
-
-
-@register_processor("data-cleaning", "sales")
-def clean_sales_table(context, params):
-    """Clean the ``SALES`` data table.
-
-    The table is a summary table obtained by doing a ``inner`` join of the
-    ``PRODUCT`` and ``ORDERS`` tables.
-    """
-    input_product_ds = "cleaned/product"
-    input_orders_ds = "cleaned/orders"
-    output_dataset = "cleaned/sales"
-
-    # load datasets
-    product_df = load_dataset(context, input_product_ds)
-    orders_df = load_dataset(context, input_orders_ds)
-
-    sales_df_clean = orders_df.merge(product_df, how="inner", on="sku")
-
-    save_dataset(context, sales_df_clean, output_dataset)
-    return sales_df_clean
+    return housing_df_clean
 
 
 @register_processor("data-cleaning", "train-test")
 def create_training_datasets(context, params):
-    """Split the ``SALES`` table into ``train`` and ``test`` datasets."""
+    """Split the ``housing`` table into ``train`` and ``test`` datasets."""
 
-    input_dataset = "cleaned/sales"
-    output_train_features = "train/sales/features"
-    output_train_target = "train/sales/target"
-    output_test_features = "test/sales/features"
-    output_test_target = "test/sales/target"
-    
+    input_dataset = "cleaned/housing"
+    output_train_features = "train/housing/features"
+    output_train_target = "train/housing/target"
+    output_test_features = "test/housing/features"
+    output_test_target = "test/housing/target"
+
     # load dataset
-    sales_df_processed = load_dataset(context, input_dataset)
+    housing_df = load_dataset(context, input_dataset)
 
-    # creating additional features that are not affected by train test split. These are features that are processed globally
-    # first time customer(02_data_processing.ipynb)################
-    cust_details = (
-        sales_df_processed.groupby(["customername"])
-        .agg({"ledger_date": "min"})
-        .reset_index()
-    )
-    cust_details.columns = ["customername", "ledger_date"]
-    cust_details["first_time_customer"] = 1
-    sales_df_processed = sales_df_processed.merge(
-        cust_details, on=["customername", "ledger_date"], how="left"
-    )
-    sales_df_processed["first_time_customer"].fillna(0, inplace=True)
-
-    # days since last purchas(02_data_processing.ipynb)###########
-    sales_df_processed.sort_values("ledger_date", inplace=True)
-    sales_df_processed["days_since_last_purchase"] = (
-        sales_df_processed.groupby("customername")["ledger_date"]
-        .diff()
-        .dt.days.fillna(0, downcast="infer")
+    # Add income_cat for stratified sampling
+    housing_df["income_cat"] = pd.cut(
+        housing_df["median_income"],
+        bins=[0.0, 1.5, 3.0, 4.5, 6.0, np.inf],
+        labels=[1, 2, 3, 4, 5],
     )
 
-    # split the data
+    # split the data using stratified sampling
     splitter = StratifiedShuffleSplit(
         n_splits=1, test_size=params["test_size"], random_state=context.random_seed
     )
-    sales_df_train, sales_df_test = custom_train_test_split(
-        sales_df_processed, splitter, by=binned_selling_price
+    train_df, test_df = custom_train_test_split(
+        housing_df, splitter, by="income_cat"
     )
+
+    # Remove the income_cat column as it's no longer needed
+    train_df = train_df.drop("income_cat", axis=1)
+    test_df = test_df.drop("income_cat", axis=1)
 
     # split train dataset into features and target
     target_col = params["target"]
     train_X, train_y = (
-        sales_df_train
+        train_df
         # split the dataset to train and test
         .get_features_targets(target_column_names=target_col)
     )
@@ -171,7 +133,7 @@ def create_training_datasets(context, params):
 
     # split test dataset into features and target
     test_X, test_y = (
-        sales_df_test
+        test_df
         # split the dataset to train and test
         .get_features_targets(target_column_names=target_col)
     )

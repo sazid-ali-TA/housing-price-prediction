@@ -71,7 +71,7 @@ def create_client(cfg):
 
 
 @contextmanager
-def start_experiment(context, expt_name=None, run_id=None, run_name=None, nested=False):
+def start_experiment(context, expt_name=None, run_id=None, run_name=None, nested=True):
     """Start an ``Experiment`` and track it using the tracking server.
 
     Parameters
@@ -108,7 +108,6 @@ def start_experiment(context, expt_name=None, run_id=None, run_name=None, nested
     tracker.set_tracking_uri(_get_tracking_uri(client))
 
     # FIXME: if run_id is provided and doesen't already exist, create one.
-
     # start experiment run
     try:
         with tracker.start_run(
