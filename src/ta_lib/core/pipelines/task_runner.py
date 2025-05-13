@@ -103,7 +103,9 @@ def run_tracked_task(task_spec):
     task_name = task_spec["name"]
     job_name = task_spec["job_name"]
     expt_name = task_spec["__tracker_experiment_name"]
-    parent_run_id = task_spec["__tracker_run_id"]
+    parent_run_id = None
+    if "__tracker_run_id" in task_spec:
+        parent_run_id = task_spec["__tracker_run_id"]
 
     try:
         with start_experiment(context, expt_name, run_id=parent_run_id, nested=True):

@@ -16,6 +16,7 @@ The data structures are as follows:
     * A ``Stage`` is a list of tasks.
     * A ``Task`` is a dictionary with information reqd. for the task.
 """
+
 import logging
 from collections import namedtuple
 from joblib import Parallel, delayed, parallel_backend
@@ -82,7 +83,8 @@ def sequential_executor(context, job_plan, n_threads_per_worker=-1):
             params["context"] = context
             params["job_name"] = task["job_name"]
             if is_tracker_supported(context):
-                params["__tracker_run_id"] = task["__tracker_run_id"]
+                if "__tracker_run_id" in task:
+                    params["__tracker_run_id"] = task["__tracker_run_id"]
                 params["__tracker_experiment_name"] = task["__tracker_experiment_name"]
             out = _safe_runner(runner, params)
             logger.info(out)

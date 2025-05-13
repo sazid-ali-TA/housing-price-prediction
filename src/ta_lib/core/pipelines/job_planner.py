@@ -33,7 +33,8 @@ def create_job_plan(context, job_spec):
             task_plan["job_name"] = job_spec["name"]
             if is_tracker_supported(context):
                 task_plan["runner"] = run_tracked_task
-                task_plan["__tracker_run_id"] = job_spec["__tracker_run_id"]
+                if "__tracker_run_id" in job_spec:
+                    task_plan["__tracker_run_id"] = job_spec["__tracker_run_id"]
                 task_plan["__tracker_experiment_name"] = job_spec[
                     "__tracker_experiment_name"
                 ]
