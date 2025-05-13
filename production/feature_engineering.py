@@ -1,4 +1,4 @@
-"""Processors for the feature engineering step of the worklow.
+"""Processors for the feature engineering step of the workflow.
 
 The step loads cleaned training data, processes the data for outliers,
 missing values and any other cleaning steps based on business rules/intuition.
@@ -6,25 +6,26 @@ missing values and any other cleaning steps based on business rules/intuition.
 The trained pipeline and any artifacts are then saved to be used in
 training/scoring pipelines.
 """
+
 import logging
 import os.path as op
 
-from category_encoders import TargetEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ta_lib.core.api import (
     get_dataframe,
     get_feature_names_from_column_transformer,
-    get_package_path,
     load_dataset,
     register_processor,
     save_pipeline,
-    DEFAULT_ARTIFACTS_PATH
+    DEFAULT_ARTIFACTS_PATH,
 )
 
 from ta_lib.data_processing.api import Outlier
+from custom_transformer import LogTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ logger = logging.getLogger(__name__)
 def transform_features(context, params):
     """Transform dataset to create training datasets."""
 
-    input_features_ds = "train/sales/features"
-    input_target_ds = "train/sales/target"
+    input_features_ds = "train/housing/features"
+    input_target_ds = "train/housing/target"
 
     artifacts_folder = DEFAULT_ARTIFACTS_PATH
 
@@ -42,8 +43,9 @@ def transform_features(context, params):
     train_X = load_dataset(context, input_features_ds)
     train_y = load_dataset(context, input_target_ds)
 
-    cat_columns = train_X.select_dtypes("object").columns
-    num_columns = train_X.select_dtypes("number").columns
+    # Identify column types
+    cat_columns = train_X.select_dtypes("object").columns.tolist()
+    num_columns = train_X.select_dtypes("number").columns.tolist()
 
     # Treating Outliers
     outlier_transformer = Outlier(method=params["outliers"]["method"])
@@ -51,96 +53,76 @@ def transform_features(context, params):
         train_X, drop=params["outliers"]["drop"]
     )
 
-    # NOTE: You can use ``Pipeline`` to compose a collection of transformers
-    # into a single transformer. In this case, we are composing a
-    # ``TargetEncoder`` and a ``SimpleImputer`` to first encode the
-    # categorical variable into a numerical values and then impute any missing
-    # values using ``most_frequent`` strategy.
-    tgt_enc_simple_impt = Pipeline(
+    # Apply log transformation if enabled
+    log_transform_params = params.get("log_transform", {})
+    if log_transform_params.get("enabled", False):
+        logger.info("Applying log transformation")
+        log_features = log_transform_params.get("features", None)
+        log_epsilon = log_transform_params.get("epsilon", 1e-6)
+        log_base = log_transform_params.get("log_base", 10)
+
+        log_transformer = LogTransformer(
+            features=log_features, epsilon=log_epsilon, log_base=log_base
+        )
+
+        # Fit and transform
+        train_X = log_transformer.fit_transform(train_X)
+
+        # Save the log transformer
+        save_pipeline(
+            log_transformer,
+            op.abspath(op.join(artifacts_folder, "log_transformer.joblib")),
+        )
+
+    # Create feature engineering pipeline
+    num_pipeline = Pipeline(
         [
-            ("target_encoding", TargetEncoder(return_df=False)),
-            ("simple_impute", SimpleImputer(strategy="most_frequent")),
+            ("imputer", SimpleImputer(strategy="median")),
+            ("std_scaler", StandardScaler()),
         ]
     )
 
-    # NOTE: the list of transformations here are not sequential but weighted
-    # (if multiple transforms are specified for a particular column)
-    # for sequential transforms use a pipeline as shown above.
+    cat_pipeline = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(sparse=False, drop="first")),
+        ]
+    )
+
+    # Combine transformers in a ColumnTransformer
     features_transformer = ColumnTransformer(
         [
-            # categorical columns
-            (
-                "tgt_enc",
-                TargetEncoder(return_df=False),
-                list(
-                    set(cat_columns)
-                    - set(["technology", "functional_status", "platforms"])
-                ),
-            ),
-            (
-                "tgt_enc_sim_impt",
-                tgt_enc_simple_impt,
-                ["technology", "functional_status", "platforms"],
-            ),
-            # numeric columns
-            ("med_enc", SimpleImputer(strategy="median"), num_columns),
+            ("num", num_pipeline, num_columns),
+            ("cat", cat_pipeline, cat_columns),
         ]
     )
 
-    # Check if the data should be sampled. This could be useful to quickly run
-    # the pipeline for testing/debugging purposes (undersample)
-    # or profiling purposes (oversample).
-    # The below is an example how the sampling can be done on the train data if required.
-    # Model Training in this reference code has been done on complete train data itself.
+    # Check if the data should be sampled
     sample_frac = params.get("sampling_fraction", None)
-    if sample_frac is not None:
-        logger.warn(f"The data has been sample by fraction: {sample_frac}")
-        sample_X = train_X.sample(frac=sample_frac, random_state=context.random_seed)
+    if sample_frac is not None and sample_frac < 1.0:
+        logger.warn(f"The data has been sampled by fraction: {sample_frac}")
+        sample_X = train_X.sample(
+            frac=sample_frac, random_state=context.random_seed
+        )
+        sample_y = train_y.loc[sample_X.index]
     else:
         sample_X = train_X
-    sample_y = train_y.loc[sample_X.index]
+        sample_y = train_y
 
+    # Fit the transformer on the training data
+    features_transformer.fit(sample_X, sample_y)
 
-    # Train the feature engg. pipeline prepared earlier. Note that the pipeline is
-    # fitted on only the **training data** and not the full dataset.
-    # This avoids leaking information about the test dataset when training the model.
-    # In the below code train_X, train_y in the fit_transform can be replaced with
-    # sample_X and sample_y if required. 
-    train_X = get_dataframe(
-        features_transformer.fit_transform(train_X, train_y),
-        get_feature_names_from_column_transformer(features_transformer),
+    # Save all feature columns
+    curated_columns = get_feature_names_from_column_transformer(
+        features_transformer
     )
-
-    # Note: we can create a transformer/feature selector that simply drops
-    # a specified set of columns. But, we don't do that here to illustrate
-    # what to do when transformations don't cleanly fall into the sklearn
-    # pattern.
-    curated_columns = list(
-        set(train_X.columns.to_list())
-        - set(
-            [
-                "manufacturer",
-                "inventory_id",
-                "ext_grade",
-                "source_channel",
-                "tgt_enc_iter_impt_platforms",
-                "ext_model_family",
-                "order_no",
-                "line",
-                "inventory_id",
-                "gp",
-                "selling_price",
-                "selling_cost",
-                "invoice_no",
-                "customername",
-            ]
-        )
-    )
-
-    # saving the list of relevant columns and the pipeline.
+ 
+    # Save the list of relevant columns and the pipeline
     save_pipeline(
-        curated_columns, op.abspath(op.join(artifacts_folder, "curated_columns.joblib"))
+        curated_columns,
+        op.abspath(op.join(artifacts_folder, "curated_columns.joblib")),
     )
     save_pipeline(
-        features_transformer, op.abspath(op.join(artifacts_folder, "features.joblib"))
+        features_transformer,
+        op.abspath(op.join(artifacts_folder, "features.joblib")),
     )

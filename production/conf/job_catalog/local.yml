@@ -2,22 +2,15 @@ jobs:
   - name: data-cleaning
     __tracker_experiment_name: Mlflow-tracker
     stages:
-      - name: "clean-base-tables"
+      - name: "clean-housing-data"
         tasks:
-          - name: "product"
-            params: {}
-          - name: "orders"
-            params: {}
-
-      - name: "clean-derivative-tables"
-        tasks:
-          - name: "sales"
+          - name: "housing"
             params: {}
       - name: "train-test-split"
         tasks:
           - name: "train-test"
             params:
-              target: unit_price
+              target: median_house_value
               test_size: 0.2
 
   - name: feat-engg
@@ -30,7 +23,13 @@ jobs:
               outliers:
                 method: mean
                 drop: False
-              sampling_fraction: 0.1
+              sampling_fraction: 1.0
+              # Add log transformation parameters
+              log_transform:
+                enabled: True
+                features: ["total_rooms", "total_bedrooms", "population", "households"]
+                epsilon: 1e-6
+                log_base: 10
 
   - name: model-gen
     __tracker_experiment_name: Mlflow-tracker
@@ -39,7 +38,19 @@ jobs:
         tasks:
           - name: "train-model"
             params:
-              sampling_fraction: 0.1
+              sampling_fraction: 1.0
+              # Model parameters
+              model_type: "random_forest"  # Options: linear_regression, random_forest
+              model_params:
+                random_forest:
+                  n_estimators: 100
+                  max_depth: 10
+                  min_samples_split: 2
+                  min_samples_leaf: 1
+                  random_state: 0
+                linear_regression:
+                  fit_intercept: True
+                  normalize: False
 
   - name: model-eval
     __tracker_experiment_name: Mlflow-tracker

@@ -11,10 +11,6 @@ from ta_lib.core.api import (
     list_jobs,
     load_job_processors
 )
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 HERE = op.dirname(op.abspath(__file__))
 
